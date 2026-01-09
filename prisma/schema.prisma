@@ -1,0 +1,203 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                   String         @id @default(cuid())
+  email                String         @unique
+  passwordHash         String
+  name                 String?
+  role                 String         @default("owner") // 'owner' | 'superadmin'
+  
+  // Profile fields
+  ownerName            String?        // Display name for business owner
+  primaryContact       String?        // Primary phone number
+  secondaryContact     String?        // Secondary phone number
+  address              String?        // Full address
+  
+  // Subscription fields
+  subscriptionTier     String         @default("free") // 'free' | 'pro' | 'lifetime' | 'admin'
+  subscriptionStatus   String         @default("active") // 'active' | 'cancelled' | 'expired' | 'past_due'
+  subscriptionType     String?        // 'subscription' | 'lifetime' | null (for free)
+  paymentType          String?        // 'recurring' | 'one_time' | null
+  oneTimeSetupFee      Decimal?       // One-time setup fee amount (for Pro)
+  lifetimePurchaseDate DateTime?      // Date when lifetime plan was purchased
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  subscriptionStartDate DateTime?
+  subscriptionEndDate  DateTime?      // For Pro: 6 months from start; For Lifetime: null
+  trialEndsAt          DateTime?
+  
+  // Limits based on tier
+  businessLimit        Int            @default(-1) // All tiers: unlimited
+  feedbackLimit        Int            @default(5) // free=5 per business, pro/lifetime=unlimited
+  
+  businesses           Business[]
+  businessActivityLogs BusinessActivityLog[]
+  reassignmentRequests ReassignmentRequest[]
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+}
+
+model Business {
+  id                  String      @id @default(cuid())
+  ownerId             String
+  owner               User        @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  businessName        String
+  businessType        String
+  googleMapsUrl       String
+  normalizedGoogleMapsUrl String? // Normalized URL for duplicate detection
+  googleMapsAboutUrl  String?     // Optional Google Maps About page URL
+  businessLocation    String?     // Physical location/address
+  aboutBusiness       String?     // About business description (max 50 words)
+  brandLogo           String?     // Brand logo URL or file path
+  qrCodeUrl           String?
+  generationCount     Int         @default(0) // Track how many times feedbacks were generated for this business
+  isActive            Boolean     @default(true) // Soft delete flag
+  deletedAt           DateTime?   // Track deletion timestamp
+  deletedBy           String?     // Track who deleted (user id or 'admin')
+  previousState       String?     // JSON string storing previous state before duplicate change (for restore)
+  archivedAt          DateTime?   // When business was archived due to duplicate
+  products            Product[]
+  employees           Employee[]
+  feedbacks           Feedback[]
+  analytics           Analytics[]
+  reactivations       BusinessReactivation[]
+  activityLogs        BusinessActivityLog[]
+  reassignmentRequests ReassignmentRequest[]
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  @@index([ownerId])
+  @@index([ownerId, businessName]) // For duplicate name checking
+  @@index([isActive])
+  @@index([googleMapsUrl]) // For duplicate URL checking across all users
+  @@index([normalizedGoogleMapsUrl, isActive]) // For efficient duplicate checking
+}
+
+model Product {
+  id         String   @id @default(cuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name       String
+  category   String
+  createdAt  DateTime @default(now())
+
+  @@index([businessId])
+}
+
+model Employee {
+  id         String   @id @default(cuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name       String
+  role       String?
+  createdAt  DateTime @default(now())
+
+  @@index([businessId])
+}
+
+model Feedback {
+  id          String   @id @default(cuid())
+  businessId  String
+  business    Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  content     String
+  sentiment   String   // 'positive' | 'neutral'
+  category    String   // product category or service aspect
+  isActive    Boolean  @default(true)
+  usageCount  Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([businessId, isActive])
+  @@index([businessId, usageCount])
+}
+
+model Analytics {
+  id         String   @id @default(cuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  eventType  String   // 'qr_scan' | 'feedback_selected' | 'google_redirect'
+  feedbackId String?
+  timestamp  DateTime @default(now())
+  userAgent  String?
+  ipHash     String?  // hashed for privacy
+
+  @@index([businessId, timestamp])
+  @@index([businessId, eventType])
+}
+
+model BusinessReactivation {
+  id                      String   @id @default(cuid())
+  businessId              String
+  business                Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  reactivatedBy           String   // admin user id
+  reactivatedAt           DateTime @default(now())
+  reason                  String?  // Reason for reactivation
+  previousGenerationCount Int      // Store count before reset
+
+  @@index([businessId])
+}
+
+model ActivityLog {
+  id          String   @id @default(cuid())
+  adminId     String   // Admin user who performed the action
+  action      String   // 'user_updated', 'business_deleted', 'subscription_changed', etc.
+  entityType  String   // 'user' | 'business' | 'subscription'
+  entityId    String   // ID of the affected entity
+  details     String?  // JSON string with action details
+  timestamp   DateTime @default(now())
+
+  @@index([adminId])
+  @@index([entityType, entityId])
+  @@index([timestamp])
+}
+
+// Business Activity Log model for tracking product/employee CRUD operations
+model BusinessActivityLog {
+  id          String   @id @default(cuid())
+  businessId  String
+  business    Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  userId      String   // User who performed the action
+  user        User     @relation(fields: [userId], references: [id])
+  action      String   // 'product_created' | 'product_updated' | 'product_deleted' | 'employee_created' | 'employee_updated' | 'employee_deleted'
+  entityType  String   // 'product' | 'employee'
+  entityId    String?  // ID of the product/employee (null for deleted items)
+  entityName  String?  // Name of the product/employee (for deleted items)
+  details     String?  // JSON string with action details
+  timestamp   DateTime @default(now())
+
+  @@index([businessId, timestamp])
+  @@index([userId])
+  @@index([action])
+  @@index([entityType])
+}
+
+// Reassignment Request model for business ownership transfer requests
+model ReassignmentRequest {
+  id          String   @id @default(cuid())
+  businessId  String
+  business    Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  requestedBy String   // User ID who requested
+  requestedFor String  // User ID who should receive the business
+  user        User     @relation(fields: [requestedBy], references: [id])
+  status      String   @default("pending") // 'pending' | 'approved' | 'rejected' | 'completed'
+  reason      String?  // Reason for reassignment request
+  adminNotes  String?  // Admin notes
+  reviewedBy  String?  // Admin user ID who reviewed
+  reviewedAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([businessId])
+  @@index([requestedBy])
+  @@index([status])
+}
